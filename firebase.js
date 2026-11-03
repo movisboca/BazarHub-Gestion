@@ -266,7 +266,9 @@ window.addEventListener('offline', () => { updateConnBadge(); });
 // localStorage.setItem('bazarhub_v279_off','1') y recargar.
 function _ocultarIdbParaAuth() {
   try {
-    if (localStorage.getItem('bazarhub_v279_off')) return null;
+    // v27.10: apagado por defecto (no resolvió la traba, que venía del service worker: ver sw.js v41).
+    // Para probarlo en un aparato: localStorage.setItem('bazarhub_v279_on','1') y recargar.
+    if (!localStorage.getItem('bazarhub_v279_on')) return null;
     const ua = navigator.userAgent || '';
     const esIos = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
     if (!esIos) return null;
