@@ -19,7 +19,7 @@
  * nuevos de una sola vez en vez de ir goteando de a uno.
  */
 
-const CACHE_VERSION = 'bazarhub-shell-v40';
+const CACHE_VERSION = 'bazarhub-shell-v41';
 
 // Archivos propios del sitio (mismo origen) + librerías externas, con las
 // mismas versiones/URLs exactas que usa index.html hoy.
@@ -28,7 +28,7 @@ const CORE_ASSETS = [
   './index.html',
   './styles.css',
   './config.js?v=5',
-  './firebase.js?v=35',
+  './firebase.js?v=36',
   './app.js?v=14',
   './caja.js?v=16',
   './stock.js?v=8',
@@ -100,6 +100,21 @@ self.addEventListener('fetch', event => {
     url.hostname.includes('googleapis.com') ||
     url.hostname.includes('firebaseio.com') ||
     url.hostname.includes('identitytoolkit')
+  ) {
+    return;
+  }
+
+  // v41: el Service Worker solo toca los archivos propios y las librerías que
+  // él mismo precarga (cdnjs, fuentes y el SDK de Firebase en gstatic). Todo lo
+  // demás -en especial apis.google.com y los marcos de firebaseapp.com que usa
+  // Firebase Auth para iniciar sesión- va directo a la red. En iPhone, con el
+  // Service Worker activo, el inicio de sesión de Firebase se quedaba sin
+  // responder; en modo privado (sin Service Worker) andaba bien.
+  if (
+    url.origin !== self.location.origin &&
+    url.hostname !== 'fonts.gstatic.com' &&
+    url.hostname !== 'cdnjs.cloudflare.com' &&
+    url.hostname !== 'www.gstatic.com'
   ) {
     return;
   }
