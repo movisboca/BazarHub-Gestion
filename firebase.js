@@ -256,6 +256,49 @@ window.addEventListener('offline', () => { updateConnBadge(); });
 
 // ===== FIREBASE INIT + AUTH ANÓNIMA =====
 
+// v27.9 (iPhone/iPad): el inicio de sesión anónimo de Firebase Auth guarda su
+// sesión en IndexedDB, y en Safari de iPhone esa base a veces queda trabada sin
+// dar error: el ingreso no avanza nunca (por eso solo andaba en modo privado,
+// que arranca con la base vacía). En iPhone/iPad se le oculta IndexedDB a Auth
+// mientras arranca, para que guarde su sesión en localStorage (que no se
+// traba), y se la devuelve apenas Auth terminó de iniciar (o a los 20 s).
+// Interruptor para apagarlo en UN aparato: en la consola del navegador,
+// localStorage.setItem('bazarhub_v279_off','1') y recargar.
+function _ocultarIdbParaAuth() {
+  try {
+    if (localStorage.getItem('bazarhub_v279_off')) return null;
+    const ua = navigator.userAgent || '';
+    const esIos = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    if (!esIos) return null;
+    const desc = Object.getOwnPropertyDescriptor(window, 'indexedDB');
+    if (!desc || !desc.configurable) return null;
+    Object.defineProperty(window, 'indexedDB', { configurable: true, enumerable: desc.enumerable, get: function () { return undefined; } });
+    try { _diagAuthLog('v27.9: Auth arranca sin IndexedDB (iPhone/iPad)'); } catch (e) {}
+    let devuelta = false;
+    return function () {
+      if (devuelta) return;
+      devuelta = true;
+      try { Object.defineProperty(window, 'indexedDB', desc); } catch (e) {}
+      try { _diagAuthLog('v27.9: IndexedDB devuelta al navegador'); } catch (e) {}
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function _devolverIdbCuandoAuthListo(devolver) {
+  let off = null;
+  let hecho = false;
+  const ya = () => {
+    if (hecho) return;
+    hecho = true;
+    try { if (off) off(); } catch (e) {}
+    devolver();
+  };
+  try { off = auth.onAuthStateChanged(() => ya()); } catch (e) { ya(); return; }
+  setTimeout(ya, 20000);
+}
+
 function initFirebase() {
   if (typeof firebase === 'undefined' || !firebase.initializeApp || !firebase.firestore || !firebase.auth) {
     // Falta el SDK (o parte): pasa si el celular no logró bajar alguno de los
@@ -276,8 +319,10 @@ function initFirebase() {
   _instalarContador();
   _diagEnganchar();   // v27.5/27.6: solo escucha (ver más abajo); antes de que Auth abra sus bases
   db   = firebase.firestore();
+  const _idbOculta = _ocultarIdbParaAuth();
   auth = firebase.auth();
   _diagAuthIniciar();
+  if (_idbOculta) _devolverIdbCuandoAuthListo(_idbOculta);
 
   // Nota: acá antes se activaba db.enablePersistence(), pero se sacó
   // porque su caché en IndexedDB se podía corromper con el uso y colgaba
