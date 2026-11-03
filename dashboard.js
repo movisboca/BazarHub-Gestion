@@ -311,9 +311,95 @@ function startLiveVentasHoy() {
 }
 
 function stopLiveVentasHoy() {
+  _detenerLiveHistorial();
   if (_liveHoyUnsub) { try { _liveHoyUnsub(); } catch (e) {} _liveHoyUnsub = null; }
   if (_liveHoyDayCheck) { clearInterval(_liveHoyDayCheck); _liveHoyDayCheck = null; }
 }
+
+// ===== v27.11: HISTORIAL EN VIVO (multi-dispositivo) =====
+// Mientras la pantalla Historial está abierta, las ventas hechas desde OTROS
+// dispositivos aparecen solas (sin cerrar sesión ni recargar). Usa un oyente
+// (onSnapshot) que pide SOLO las ventas nuevas o modificadas desde la última
+// carga (marca "_mt"), igual que el panel de administración: no vuelve a leer
+// lo que ya se tiene. Se apaga al salir de Historial (ver stopLiveVentasHoy).
+// Interruptor para apagarlo en UN aparato: localStorage.setItem('bazarhub_hist_off','1') y recargar.
+let _liveHistUnsub = null; // función para cortar el oyente actual
+let _liveHistWm = 0; // al día hasta esta marca _mt (ms)
+
+function _liveHistActivo() {
+  try { return !localStorage.getItem('bazarhub_hist_off'); } catch (e) { return true; }
+}
+
+function _paginaHistorialAbierta() {
+  const el = document.getElementById('page-historial');
+  return !!(el && el.classList.contains('act'));
+}
+
+function _liveHistAplicar(snap) {
+  if (!Array.isArray(store.sales)) return;
+  let cambio = false, agregado = false, leidas = 0;
+  let idx = new Map(store.sales.map((s, i) => [s.id, i]));
+  snap.docChanges().forEach(ch => {
+    const id = parseInt(ch.doc.id);
+    if (isNaN(id)) return;
+    if (!ch.doc.metadata.hasPendingWrites) leidas++;
+    if (ch.type === 'removed') {
+      if (idx.has(id)) { store.sales.splice(idx.get(id), 1); idx = new Map(store.sales.map((s, i) => [s.id, i])); cambio = true; }
+      return;
+    }
+    const sello = _separarSello(ch.doc.data());
+    if (sello.t > _liveHistWm) _liveHistWm = sello.t;
+    const venta = { ...sello.data, id: id };
+    if (idx.has(id)) { store.sales[idx.get(id)] = venta; }
+    else { store.sales.push(venta); idx.set(id, store.sales.length - 1); agregado = true; }
+    cambio = true;
+  });
+  if (agregado) store.sales.sort((a, b) => a.id - b.id);
+  if (!(snap.metadata && snap.metadata.fromCache)) { try { _contarLecturas('ventas', leidas); } catch (e) {} }
+  if (cambio && _paginaHistorialAbierta()) {
+    try { _aplicarFiltroHistorial(); } catch (e) { console.warn('Historial en vivo: no se pudo redibujar', e); }
+  }
+}
+
+function _liveHistSuscribir() {
+  if (_liveHistUnsub) { try { _liveHistUnsub(); } catch (e) {} _liveHistUnsub = null; }
+  if (typeof db === 'undefined' || !db || !navigator.onLine || !_liveHistActivo()) return;
+  if (!Array.isArray(store.sales) || store._offlineFallbackShown) return;
+  let marca = 0;
+  try { marca = _liveHoyMarcaBase(); } catch (e) { marca = 0; }
+  let q;
+  if (_liveHistWm > 0 || marca > 0) {
+    const margen = (typeof _SYNC_MARGEN_MS === 'number') ? _SYNC_MARGEN_MS : 120000;
+    const base = Math.max(_liveHistWm, marca);
+    q = db.collection('sales').where('_mt', '>', firebase.firestore.Timestamp.fromMillis(Math.max(0, base - margen)));
+  } else {
+    // Sin una carga confiable de referencia: se escuchan solo las ventas de hoy.
+    q = db.collection('sales').where('date', '==', _fechaHoyStr());
+  }
+  try {
+    _liveHistUnsub = q.onSnapshot(
+      snap => { try { _liveHistAplicar(snap); } catch (e) { console.warn('Historial en vivo:', e); } },
+      err => console.warn('No se pudo actualizar el historial en vivo:', err)
+    );
+  } catch (e) {
+    console.warn('No se pudo iniciar el historial en vivo:', e);
+  }
+}
+
+function _iniciarLiveHistorial() {
+  if (_liveHistUnsub) return; // ya está escuchando
+  _liveHistSuscribir();
+}
+
+function _detenerLiveHistorial() {
+  if (_liveHistUnsub) { try { _liveHistUnsub(); } catch (e) {} _liveHistUnsub = null; }
+}
+
+// Al volver a la app desde segundo plano (iPhone), se vuelve a conectar el
+// oyente: pide solo lo que cambió desde la última marca.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && _liveHistUnsub && _paginaHistorialAbierta()) _liveHistSuscribir();
+});
 
 // ===== VENTAS POR MES =====
 
@@ -922,6 +1008,7 @@ function renderHistory() {
   if (desdeEl && !desdeEl.value) desdeEl.value = hoyISO;
   if (hastaEl && !hastaEl.value) hastaEl.value = hoyISO;
   _aplicarFiltroHistorial();
+  _iniciarLiveHistorial();
 }
 
 function _renderHistorialFiltros() {
