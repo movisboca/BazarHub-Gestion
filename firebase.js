@@ -67,6 +67,50 @@ function _cleanupOldFirestoreCache() {
 // Ahora se guarda solo lo necesario para trabajar sin conexión: productos,
 // cajas, usuarios, etc. y las ventas recientes (no todo el historial ni los
 // movimientos, que igual están en Firebase y en la copia de IndexedDB).
+// ===== v28 (Gestión): 3 LOCALES =====
+// Productos, proveedores, combos y usuarios son compartidos entre locales.
+// Todo lo demás (ventas, caja, retiros, movimientos, pedidos, cta. cte.,
+// devoluciones y configuración) vive en colecciones propias de cada local
+// ("sales__ro", "cajas__lf"...). El stock, lo vendido y lo recaudado de cada
+// producto viven en "stock__<local>" (un documento por producto y local).
+const _BG_COMPARTIDAS  = { products: 1, proveedores: 1, combos: 1, users: 1, _borrados: 1 };
+const _BG_CAMPOS_LOCAL = ['stock', 'sold', 'revenue'];
+
+function _bgLocal() { return (window.BG && window.BG.local) || 'mg'; }
+function _bgNombreCol(n) {
+  return (typeof n === 'string' && !_BG_COMPARTIDAS[n] && n.indexOf('__') < 0) ? n + '__' + _bgLocal() : n;
+}
+function _bgLogico(n) {
+  const i = (typeof n === 'string') ? n.indexOf('__') : -1;
+  return i > 0 ? n.slice(0, i) : n;
+}
+function _bgEstable(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return '[' + v.map(_bgEstable).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + _bgEstable(v[k])).join(',') + '}';
+}
+// id de producto -> texto de su parte compartida tal como se cargó o se guardó.
+// Sirve para no reescribir el producto compartido (y pisar un cambio hecho en
+// otro local) cuando solo cambió el stock, por ejemplo al vender.
+const _bgHashProd = {};
+function _bgPartirProducto(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const comp = {}, loc = {};
+  let hay = false;
+  Object.keys(data).forEach(k => {
+    if (_BG_CAMPOS_LOCAL.indexOf(k) >= 0) { loc[k] = data[k]; hay = true; }
+    else comp[k] = data[k];
+  });
+  return { comp, loc: hay ? loc : null };
+}
+function _instalarColeccionesPorLocal() {
+  const F = firebase.firestore && firebase.firestore.Firestore;
+  if (!F || !F.prototype || F.prototype.__bgLocales) return;
+  const orig = F.prototype.collection;
+  F.prototype.collection = function (n) { return orig.call(this, _bgNombreCol(n)); };
+  F.prototype.__bgLocales = true;
+}
+
 const _LOCAL_VENTAS_DIAS = 3;
 
 function _ventasParaCopiaLocal() {
@@ -98,6 +142,7 @@ function saveLocalData() {
       saldoAnterior: store.saldoAnterior,
       cajaAbierta:   store.cajaAbierta,
       savedAt:       Date.now(),
+      local:         _bgLocal(),
     };
     localStorage.setItem(OFFLINE_DATA_KEY, JSON.stringify(snapshot));
   } catch(e) {
@@ -116,6 +161,7 @@ function loadLocalData() {
     // Una copia de hace más de 2 días ya no sirve para vender (caja, stock
     // y precios pueden haber cambiado): mejor avisar que no hay conexión.
     if (Date.now() - s.savedAt > 2 * 24 * 60 * 60 * 1000) return false;
+    if (s.local !== _bgLocal()) return false;   // copia de otro local: no sirve
     store.products     = s.products     || [];
     store.proveedores  = s.proveedores  || [];
     store.sales        = s.sales        || [];
@@ -317,6 +363,7 @@ function initFirebase() {
   if (!firebase.apps.length) {
     firebase.initializeApp(config);
   }
+  _instalarColeccionesPorLocal();
   _instalarSellos();
   _instalarContador();
   _diagEnganchar();   // v27.5/27.6: solo escucha (ver más abajo); antes de que Auth abra sus bases
@@ -540,7 +587,7 @@ const _SYNC_INCREMENTAL_DESDE = Date.parse('2026-09-30T07:00:00Z'); // 30/9 4:00
 // Colecciones que se cargan de forma incremental. Las chicas (usuarios,
 // configuración, combos) se siguen bajando completas: son pocos documentos.
 const _SYNC_COLS = ['products', 'proveedores', 'sales', 'orders', 'movimientos',
-                    'ctacte', 'retiros', 'cajas', 'devoluciones'];
+                    'ctacte', 'retiros', 'cajas', 'devoluciones', 'stock'];
 
 // ===== v27: AHORRO DE LECTURAS =====
 // 1) Movimientos: en una carga COMPLETA (dispositivo nuevo, ventana de
@@ -619,7 +666,7 @@ function _categoriaDeSnap(snap, forzada) {
   if (forzada) return forzada;
   try {
     if (snap.docs && snap.docs.length) {
-      const c = snap.docs[0].ref.parent.id;
+      const c = _bgLogico(snap.docs[0].ref.parent.id);
       if (c === 'movimientos') return 'movimientos';
       if (c === 'sales') return 'ventas';
     }
@@ -681,7 +728,12 @@ function _refMarcaBorrado(ref) {
   // Solo colecciones de primer nivel (la app no usa subcolecciones).
   if (!ref || !ref.parent || ref.parent.parent) return null;
   if (ref.parent.id === _SYNC_BORRADOS_COL) return null;
-  return ref.firestore.collection(_SYNC_BORRADOS_COL).doc(ref.parent.id + '__' + ref.id);
+  const logico = _bgLogico(ref.parent.id);
+  const propia = !_BG_COMPARTIDAS[logico];
+  return {
+    ref: ref.firestore.collection(_SYNC_BORRADOS_COL).doc(logico + (propia ? '__' + _bgLocal() : '') + '__' + ref.id),
+    col: logico, loc: propia ? _bgLocal() : null,
+  };
 }
 
 function _instalarSellos() {
@@ -698,28 +750,59 @@ function _instalarSellos() {
   const origDRset = DR.set, origWBset = WB.set, origWBdel = WB.delete;
   const origTXset = TX.set, origTXdel = TX.delete;
 
+  const _marcaBorrado = function (self, origSet, ref) {
+    const m = _refMarcaBorrado(ref);
+    if (m) origSet.call(self, m.ref, { col: m.col, loc: m.loc, id: ref.id, _mt: fs.FieldValue.serverTimestamp() });
+  };
+  const _esProducto = function (ref) { return !!(ref && ref.parent && ref.parent.id === 'products'); };
+  const _refStock = function (ref) { return ref.firestore.collection('stock').doc(ref.id); };
+  // Un producto se guarda en dos partes: la compartida (solo si cambió) y la
+  // del local (stock, vendido, recaudado).
+  const _escribirProducto = function (self, origSet, ref, data, options) {
+    const p = _bgPartirProducto(data);
+    if (!p) return false;
+    const txt = _bgEstable(p.comp);
+    if (_bgHashProd[ref.id] !== txt || options !== undefined) {
+      _bgHashProd[ref.id] = txt;
+      if (options === undefined) origSet.call(self, ref, _sellar(ref, p.comp));
+      else origSet.call(self, ref, _sellar(ref, p.comp), options);
+    }
+    if (p.loc) {
+      const sr = _refStock(ref);
+      origSet.call(self, sr, _sellar(sr, p.loc), { merge: true });
+    }
+    return true;
+  };
+
   DR.set = function (data, options) {
+    if (_esProducto(this)) {
+      const b = this.firestore.batch();
+      if (options === undefined) b.set(this, data); else b.set(this, data, options);
+      return b.commit();
+    }
     return options === undefined ? origDRset.call(this, _sellar(this, data))
                                  : origDRset.call(this, _sellar(this, data), options);
   };
   WB.set = function (ref, data, options) {
+    if (_esProducto(ref) && _escribirProducto(this, origWBset, ref, data, options)) return this;
     return options === undefined ? origWBset.call(this, ref, _sellar(ref, data))
                                  : origWBset.call(this, ref, _sellar(ref, data), options);
   };
   TX.set = function (ref, data, options) {
+    if (_esProducto(ref) && _escribirProducto(this, origTXset, ref, data, options)) return this;
     return options === undefined ? origTXset.call(this, ref, _sellar(ref, data))
                                  : origTXset.call(this, ref, _sellar(ref, data), options);
   };
   WB.delete = function (ref) {
     const r = origWBdel.call(this, ref);
-    const marca = _refMarcaBorrado(ref);
-    if (marca) origWBset.call(this, marca, { col: ref.parent.id, id: ref.id, _mt: fs.FieldValue.serverTimestamp() });
+    _marcaBorrado(this, origWBset, ref);
+    if (_esProducto(ref)) { delete _bgHashProd[ref.id]; WB.delete.call(this, _refStock(ref)); }
     return r;
   };
   TX.delete = function (ref) {
     const r = origTXdel.call(this, ref);
-    const marca = _refMarcaBorrado(ref);
-    if (marca) origTXset.call(this, marca, { col: ref.parent.id, id: ref.id, _mt: fs.FieldValue.serverTimestamp() });
+    _marcaBorrado(this, origTXset, ref);
+    if (_esProducto(ref)) { delete _bgHashProd[ref.id]; TX.delete.call(this, _refStock(ref)); }
     return r;
   };
   // Un borrado suelto pasa a ser un lote chico: borrar + dejar la marca,
@@ -833,6 +916,7 @@ async function _iniciarSync() {
       snap.forEach(d => {
         const v = d.data();
         const t = (v._mt && typeof v._mt.toMillis === 'function') ? v._mt.toMillis() : 0;
+        if (v.loc && v.loc !== _bgLocal()) return;
         if (v.col && v.id != null) borrados.push({ col: v.col, id: String(v.id), t });
       });
     }
@@ -1897,10 +1981,18 @@ function _rerenderPaginaActual() {
 }
 
 async function _loadProducts() {
-  const docs = await _syncCol('products');
+  const [docs, stDocs] = await Promise.all([_syncCol('products'), _syncCol('stock')]);
+  const st = {};
+  stDocs.forEach(d => { st[d.id] = d.data || {}; });
   store.products = [];
+  docs.forEach(d => {
+    const s = st[d.id] || {};
+    const base = { ...d.data, id: parseInt(d.id) };
+    _BG_CAMPOS_LOCAL.forEach(k => { delete base[k]; });
+    _bgHashProd[d.id] = _bgEstable(base);
+    store.products.push({ ...base, stock: s.stock || 0, sold: s.sold || 0, revenue: s.revenue || 0 });
+  });
   if (docs.length > 0) {
-    docs.forEach(d => store.products.push({ ...d.data, id: parseInt(d.id) }));
     store.nextProdId = Math.max(...store.products.map(p => p.id), 7) + 1;
   }
 }
