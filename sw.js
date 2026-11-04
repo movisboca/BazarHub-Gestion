@@ -19,7 +19,7 @@
  * nuevos de una sola vez en vez de ir goteando de a uno.
  */
 
-const CACHE_VERSION = 'bazarhub-shell-v42';
+const CACHE_VERSION = 'bgestion-shell-v1';
 
 // Archivos propios del sitio (mismo origen) + librerías externas, con las
 // mismas versiones/URLs exactas que usa index.html hoy.
@@ -27,7 +27,8 @@ const CORE_ASSETS = [
   './',
   './index.html',
   './styles.css',
-  './config.js?v=5',
+  './aislar.js?v=1',
+'./config.js?v=5',
   './firebase.js?v=36',
   './app.js?v=14',
   './caja.js?v=16',
@@ -83,7 +84,7 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches
       .keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE_VERSION).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k.indexOf('bgestion-shell-') === 0 && k !== CACHE_VERSION).map(k => caches.delete(k))))
   );
 });
 
