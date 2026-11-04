@@ -19,7 +19,7 @@
  * nuevos de una sola vez en vez de ir goteando de a uno.
  */
 
-const CACHE_VERSION = 'bgestion-shell-v1';
+const CACHE_VERSION = 'bgestion-shell-v2';
 
 // Archivos propios del sitio (mismo origen) + librerías externas, con las
 // mismas versiones/URLs exactas que usa index.html hoy.
@@ -27,16 +27,17 @@ const CORE_ASSETS = [
   './',
   './index.html',
   './styles.css',
-  './aislar.js?v=1',
+  './aislar.js?v=2',
 './config.js?v=5',
-  './firebase.js?v=36',
-  './app.js?v=14',
+  './firebase.js?v=37',
+  './app.js?v=15',
   './caja.js?v=16',
   './stock.js?v=8',
   './dashboard.js?v=11',
   './importar.js?v=5',
   './gastos.js?v=2',
   './exportar.js?v=1',
+'./locales.js?v=1',
 ];
 
 // Recursos externos (CDN). Se cachean "mejor esfuerzo": si alguno no se
