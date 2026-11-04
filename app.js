@@ -117,6 +117,7 @@ const NAV_ADMIN = [
     { id: 'ventas',     ico: '🛒', label: 'Ventas y caja' },
     { id: 'historial',  ico: '📋', label: 'Historial' },
     { id: 'dashboard',  ico: '📊', label: 'Dashboard' },
+    { id: 'locales',    ico: '🏬', label: 'Resumen de locales' },
   ]},
   { sec: 'Inventario', items: [
     { id: 'stock',       ico: '📦', label: 'Stock' },
@@ -160,6 +161,7 @@ const PAGE_TITLES = {
   ventas:      'Ventas y caja',
   historial:   'Historial',
   dashboard:   'Dashboard',
+  locales:     'Resumen de locales',
   stock:       'Stock',
   movimientos: 'Movimientos de stock',
   productos:   'Productos',
@@ -359,6 +361,35 @@ async function finishSetup() {
   toast('¡BazarHub configurado! Ya podés ingresar.', 'ok');
 }
 
+// ===== v28 (Gestión): LOCALES =====
+function _bgLocalValido(id) {
+  return !!(window.BG && BG.locales.some(l => l.id === id));
+}
+// Un cajero trabaja siempre en su local. Si está en otro, se cambia y la
+// página se recarga sola (devuelve true). El administrador elige el local
+// desde el menú de la izquierda.
+function _bgForzarLocal(user) {
+  if (!user || user.role === 'admin') return false;
+  if (!_bgLocalValido(user.local) || user.local === BG.local) return false;
+  BG.fijarLocal(user.local);
+  return true;
+}
+function _bgPintarLocal(isAdmin) {
+  const nombre = BG.nombre(BG.local);
+  const badge = document.getElementById('local-badge');
+  if (badge) badge.textContent = '📍 ' + nombre;
+  const box = document.getElementById('sb-local');
+  if (!box) return;
+  if (isAdmin) {
+    box.innerHTML = '<div style="font-size:11px;opacity:.7;margin-bottom:4px">LOCAL</div>' +
+      '<select id="sb-local-sel" onchange="BG.cambiarLocal(this.value)" style="width:100%;padding:7px 8px;border-radius:8px;font-size:13px">' +
+      BG.locales.map(l => '<option value="' + l.id + '"' + (l.id === BG.local ? ' selected' : '') + '>' + l.nombre + '</option>').join('') +
+      '</select>';
+  } else {
+    box.innerHTML = '<div style="font-size:11px;opacity:.7;margin-bottom:2px">LOCAL</div><div style="font-size:14px;font-weight:600">📍 ' + nombre + '</div>';
+  }
+}
+
 // ===== LOGIN =====
 
 function renderUserGrid() {
@@ -408,7 +439,8 @@ async function tryRestoreSession() {
   if (!saved || !saved.userId) return;
 
   const user = store.users.find(u => u.id === saved.userId);
-  if (!user) {
+  if (user && _bgForzarLocal(user)) return;   // otro local: la página se recarga sola
+  if (!user || (user.role !== 'admin' && !_bgLocalValido(user.local))) {
     clearSession();
     // Si ya se estaba mostrando la app con esa sesión (datos locales viejos
     // mientras Firebase terminaba de conectar) y el usuario ya no existe,
@@ -456,7 +488,8 @@ function _restaurarRapido() {
     if (!saved || !saved.userId) return false;
     if (typeof loadLocalData !== 'function' || !loadLocalData()) return false;
     const user = store.users.find(u => u.id === saved.userId);
-    if (!user) return false;
+    if (!user || (user.role !== 'admin' && !_bgLocalValido(user.local))) return false;
+    if (_bgForzarLocal(user)) return true;   // otro local: la página se recarga sola
     store.currentUser = user;
     store._restauradaRapido = true;
     document.getElementById('login').style.display = 'none';
@@ -563,12 +596,19 @@ async function doLogin() {
       return;
     }
 
+    if (user.role !== 'admin' && !_bgLocalValido(user.local)) {
+      errEl.textContent = 'Este usuario todavía no tiene un local asignado. Pedile al administrador que se lo asigne.';
+      errEl.style.display = 'block';
+      return;
+    }
+
     // Login exitoso
     store.loginAttempts = 0;
     store.loginLockedUntil = 0;
     errEl.style.display = 'none';
     store.currentUser = user;
     saveSession(user);
+    if (_bgForzarLocal(user)) return;   // era de otro local: la página se recarga sola
     document.getElementById('login-user').value = '';
     document.getElementById('login-pass').value = '';
     document.getElementById('login').style.display = 'none';
@@ -622,6 +662,7 @@ function applyRole() {
   document.getElementById('sb-uname').textContent = store.currentUser.name;
   document.getElementById('sb-urole').textContent = isAdmin ? 'Administrador' : 'Cajero';
 
+  try { _bgPintarLocal(isAdmin); } catch (e) {}
   const nav = isAdmin ? NAV_ADMIN : NAV_CAJERO;
   document.getElementById('nav-menu').innerHTML = nav.map(section =>
     `<div class="nav-sec">${section.sec}</div>` +
@@ -664,6 +705,7 @@ function go(page) {
     ventas:      () => { updateCajaBar(); renderDrafts(); },
     historial:   () => renderHistory(),
     dashboard:   () => { renderDashboard(); renderAlerts(); startLiveVentasHoy(); },
+    locales:     () => renderLocales(),
     stock:       () => renderStockPage(),
     movimientos: () => renderMovimientos(),
     productos:   () => renderProducts(),
@@ -981,6 +1023,9 @@ function renderUsuarios() {
               <div style="font-size:14px;font-weight:600">${u.name}</div>
               <div style="font-size:12px;color:var(--txt2)">Cajero</div>
             </div>
+            <div style="margin-left:auto">
+              <select onchange="changeCajeroLocal('${u.id}', this.value)" style="font-size:13px;padding:6px 8px;border-radius:8px">${_bgOpcionesLocal(u.local, true)}</select>
+            </div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <input type="password" id="pass-${u.id}" placeholder="Nueva contraseña" style="flex:1;min-width:150px;font-size:13px">
@@ -996,6 +1041,8 @@ function openUserModal() {
   openModal('modal-user');
   document.getElementById('u-name').value = '';
   document.getElementById('u-pass').value = '';
+  const sl = document.getElementById('u-local');
+  if (sl) sl.innerHTML = _bgOpcionesLocal(BG.local, false);
 }
 
 async function saveUserForm() {
@@ -1004,11 +1051,14 @@ async function saveUserForm() {
   const pass = document.getElementById('u-pass').value;
   if (!name) { showMsg('msg-user', 'Ingresá el nombre', 'err'); return; }
   if (!pass || pass.length < 4) { showMsg('msg-user', 'Contraseña mínimo 4 caracteres', 'err'); return; }
+  const local = document.getElementById('u-local').value;
+  if (!_bgLocalValido(local)) { showMsg('msg-user', 'Elegí el local del cajero', 'err'); return; }
 
   const u = {
     id: 'caj' + store.nextUserId++,
     name,
     role: 'cajero',
+    local,
     passHash: await hashPass(pass),
     avatar: document.getElementById('u-avatar').value,
   };
@@ -1018,6 +1068,20 @@ async function saveUserForm() {
   renderUsuarios();
   renderUserGrid();
   toast('Cajero creado');
+}
+
+function _bgOpcionesLocal(sel, conVacio) {
+  return (conVacio ? '<option value=""' + (!sel ? ' selected' : '') + '>— sin asignar —</option>' : '') +
+    BG.locales.map(l => '<option value="' + l.id + '"' + (l.id === sel ? ' selected' : '') + '>' + l.nombre + '</option>').join('');
+}
+
+async function changeCajeroLocal(id, val) {
+  if (!store.currentUser || store.currentUser.role !== 'admin') { toast('No autorizado', 'err'); return; }
+  const u = store.users.find(x => x.id === id);
+  if (!u) return;
+  u.local = val || '';
+  await saveUser(u);
+  toast(val ? 'Local asignado: ' + BG.nombre(val) : 'Local quitado');
 }
 
 async function changeCajeroPass(id) {
