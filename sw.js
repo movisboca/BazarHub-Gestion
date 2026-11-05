@@ -19,7 +19,7 @@
  * nuevos de una sola vez en vez de ir goteando de a uno.
  */
 
-const CACHE_VERSION = 'bgestion-shell-v2';
+const CACHE_VERSION = 'bgestion-shell-v3';
 
 // Archivos propios del sitio (mismo origen) + librerías externas, con las
 // mismas versiones/URLs exactas que usa index.html hoy.
@@ -29,7 +29,7 @@ const CORE_ASSETS = [
   './styles.css',
   './aislar.js?v=2',
 './config.js?v=5',
-  './firebase.js?v=37',
+  './firebase.js?v=38',
   './app.js?v=15',
   './caja.js?v=16',
   './stock.js?v=8',
