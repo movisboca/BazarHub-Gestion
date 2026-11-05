@@ -824,26 +824,29 @@ function _separarSello(raw) {
 
 // --- 2. Copia local en IndexedDB ---
 
-let _syncDbPromise = null;
+const _syncDbPromises = {};
 // Última marca (_mt, en ms) hasta la que cada colección está al día en este
 // dispositivo. La usa el panel para escuchar solo lo que cambió desde entonces.
 const _syncMarca = {};
 
-function _syncDb() {
-  if (_syncDbPromise) return _syncDbPromise;
-  _syncDbPromise = withTimeout(new Promise((resolve, reject) => {
+// Productos y proveedores son iguales en los 3 locales: su copia local se guarda
+// en una base común, así al cambiar de local no se vuelven a bajar.
+function _syncDb(key) {
+  const nombre = _BG_COMPARTIDAS[key] ? _SYNC_DB_NAME + '_comun' : _SYNC_DB_NAME;
+  if (_syncDbPromises[nombre]) return _syncDbPromises[nombre];
+  _syncDbPromises[nombre] = withTimeout(new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') { reject(new Error('Sin IndexedDB')); return; }
-    const req = indexedDB.open(_SYNC_DB_NAME, 1);
+    const req = indexedDB.open(nombre, 1);
     req.onupgradeneeded = () => { req.result.createObjectStore(_SYNC_STORE); };
     req.onsuccess = () => resolve(req.result);
     req.onerror   = () => reject(req.error);
     req.onblocked = () => reject(new Error('IndexedDB bloqueada'));
-  }), 4000, 'abrir copia local').catch(e => { _syncDbPromise = null; throw e; });
-  return _syncDbPromise;
+  }), 4000, 'abrir copia local').catch(e => { _syncDbPromises[nombre] = null; throw e; });
+  return _syncDbPromises[nombre];
 }
 
 async function _syncIdbGet(key) {
-  const idb = await _syncDb();
+  const idb = await _syncDb(key);
   return withTimeout(new Promise((resolve, reject) => {
     const req = idb.transaction(_SYNC_STORE, 'readonly').objectStore(_SYNC_STORE).get(key);
     req.onsuccess = () => resolve(req.result || null);
@@ -852,7 +855,7 @@ async function _syncIdbGet(key) {
 }
 
 async function _syncIdbPut(key, value) {
-  const idb = await _syncDb();
+  const idb = await _syncDb(key);
   return withTimeout(new Promise((resolve, reject) => {
     const tx = idb.transaction(_SYNC_STORE, 'readwrite');
     tx.objectStore(_SYNC_STORE).put(value, key);
@@ -1788,7 +1791,7 @@ function _ejecutarReparacionPendiente() {
   _reparacionLista = false;
   const terminar = () => { _reparacionLista = true; };
   (async () => {
-    const nombres = new Set([_SYNC_DB_NAME, 'firebaseLocalStorageDb']);
+    const nombres = new Set([_SYNC_DB_NAME, _SYNC_DB_NAME + '_comun', 'firebaseLocalStorageDb']);
     try {
       if (indexedDB.databases) {
         (await indexedDB.databases()).forEach(d => {
